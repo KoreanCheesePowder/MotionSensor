@@ -11,36 +11,96 @@ local DRIVER_INFO_CAPABILITY_ID = "buildbook37604.driverInformation"
 local driver_info = capabilities[DRIVER_INFO_CAPABILITY_ID]
 
 local MOTION_TIMER = "motionResetTimer"
-local DEFAULT_INTERVAL_SECONDS = 60
+local TIMER_GENERATION = "motionTimerGeneration"
+local LAST_ACCEPTED_MOTION = "lastAcceptedMotionMonotonic"
 
-local function get_interval_seconds(device)
-  local value = device.preferences and device.preferences.motionInterval
-  local seconds = tonumber(value) or DEFAULT_INTERVAL_SECONDS
-  if seconds < 1 then return DEFAULT_INTERVAL_SECONDS end
-  return seconds
+local DEFAULT_DETECTION_INTERVAL = 0.1
+local DEFAULT_INACTIVE_INTERVAL = 15
+
+local function preference_number(device, name, default_value, minimum, maximum)
+  local value = tonumber(device.preferences and device.preferences[name]) or default_value
+  if value < minimum then value = minimum end
+  if value > maximum then value = maximum end
+  return value
+end
+
+local function detection_interval(device)
+  return preference_number(device, "detectionInterval", DEFAULT_DETECTION_INTERVAL, 0.1, 3600)
+end
+
+local function inactive_interval(device)
+  return preference_number(device, "inactiveInterval", DEFAULT_INACTIVE_INTERVAL, 0.1, 3600)
+end
+
+local function extend_on_motion(device)
+  local value = device.preferences and device.preferences.extendOnMotion
+  if value == nil then return true end
+  return value == true
 end
 
 local function cancel_motion_timer(device)
   local timer = device:get_field(MOTION_TIMER)
   if timer ~= nil then
-    device.thread:cancel_timer(timer)
+    pcall(function() device.thread:cancel_timer(timer) end)
     device:set_field(MOTION_TIMER, nil)
   end
 end
 
-local function schedule_motion_inactive(device)
-  cancel_motion_timer(device)
-  local timer = device.thread:call_with_delay(get_interval_seconds(device), function()
+local function next_timer_generation(device)
+  local generation = (device:get_field(TIMER_GENERATION) or 0) + 1
+  device:set_field(TIMER_GENERATION, generation)
+  return generation
+end
+
+local function schedule_motion_inactive(device, restart)
+  if restart then
+    cancel_motion_timer(device)
+  elseif device:get_field(MOTION_TIMER) ~= nil then
+    return
+  end
+
+  local generation = next_timer_generation(device)
+  local timer = device.thread:call_with_delay(inactive_interval(device), function()
+    if device:get_field(TIMER_GENERATION) ~= generation then return end
     device:emit_event(capabilities.motionSensor.motion.inactive())
     device:set_field(MOTION_TIMER, nil)
   end)
   device:set_field(MOTION_TIMER, timer)
 end
 
+local function accept_motion_report(device)
+  local now = os.clock()
+  local last = device:get_field(LAST_ACCEPTED_MOTION)
+  if last ~= nil and (now - last) < detection_interval(device) then
+    return false
+  end
+  device:set_field(LAST_ACCEPTED_MOTION, now)
+  return true
+end
+
+local function process_motion_active(device)
+  if not accept_motion_report(device) then return end
+
+  local current = device:get_latest_state(
+    "main",
+    capabilities.motionSensor.ID,
+    capabilities.motionSensor.motion.NAME
+  )
+
+  if current ~= "active" then
+    device:emit_event(capabilities.motionSensor.motion.active())
+    schedule_motion_inactive(device, true)
+    return
+  end
+
+  if extend_on_motion(device) then
+    schedule_motion_inactive(device, true)
+  end
+end
+
 local function emit_motion_from_zone_status(device, zone_status)
   if zone_status:is_alarm1_set() then
-    device:emit_event(capabilities.motionSensor.motion.active())
-    schedule_motion_inactive(device)
+    process_motion_active(device)
   end
 end
 
@@ -58,7 +118,7 @@ local function emit_driver_information(device)
       device:emit_event(driver_info.author("치즈가루"))
     end
     if driver_info.driverVersion then
-      device:emit_event(driver_info.driverVersion("v1.0.3"))
+      device:emit_event(driver_info.driverVersion("v1.0.4"))
     end
   end
 end
@@ -75,7 +135,7 @@ end
 local function do_configure(driver, device)
   device:configure()
   device:send(device_management.build_bind_request(device, IASZone.ID, driver.environment_info.hub_zigbee_eui))
-  device:send(IASZone.attributes.ZoneStatus:configure_reporting(device, 30, 300, 1))
+  device:send(IASZone.attributes.ZoneStatus:configure_reporting(device, 1, 300, 1))
   device:send(device_management.build_bind_request(device, PowerConfiguration.ID, driver.environment_info.hub_zigbee_eui))
   device:send(PowerConfiguration.attributes.BatteryPercentageRemaining:configure_reporting(device, 30, 21600, 1))
   device:send(PowerConfiguration.attributes.BatteryPercentageRemaining:read(device))
@@ -84,11 +144,21 @@ end
 local function info_changed(driver, device, event, args)
   local old_preferences = (args.old_st_store and args.old_st_store.preferences) or {}
   local current_preferences = device.preferences or {}
-  if old_preferences.motionInterval ~= current_preferences.motionInterval then
-    if device:get_latest_state("main", capabilities.motionSensor.ID, capabilities.motionSensor.motion.NAME) == "active" then
-      schedule_motion_inactive(device)
+
+  local inactive_changed = old_preferences.inactiveInterval ~= current_preferences.inactiveInterval
+  local extend_changed = old_preferences.extendOnMotion ~= current_preferences.extendOnMotion
+
+  if inactive_changed or extend_changed then
+    local current_motion = device:get_latest_state(
+      "main",
+      capabilities.motionSensor.ID,
+      capabilities.motionSensor.motion.NAME
+    )
+    if current_motion == "active" then
+      schedule_motion_inactive(device, true)
     end
   end
+
   emit_driver_information(device)
 end
 

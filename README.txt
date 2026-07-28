@@ -1,7 +1,20 @@
-﻿C.P MotionSensor v1.0.3
+C.P MotionSensor v1.0.4
 
-- 감지 유지시간(Interval) 설정 복구: 5초, 10초, 15초, 30초, 1분, 2분, 3분, 5분
-- 비 센서와 동일한 buildbook37604.driverInformation 사용
-- 제작자: 치즈가루
-- 버전: v1.0.3
-- Custom Capability 생성/조회 명령 없이 드라이버만 패키징 및 설치
+Author: CheesePowder
+Version: v1.0.4
+Package key: cheesepowder.ewelink-ms01-motion
+
+Settings
+- Detection interval: 0.1 to 3600 seconds
+- Inactive interval: 0.1 to 3600 seconds
+- Extend inactive timer on motion: On/Off
+
+Behavior
+- Detection interval is a software debounce interval for incoming motion reports.
+- It cannot make the physical sensor transmit faster than its hardware allows.
+- With extension enabled, every accepted motion report restarts the inactive timer.
+- With extension disabled, the timer started by the first motion report is not extended.
+
+Install
+1. Extract the ZIP.
+2. Run SETUP-AND-INSTALL.cmd.

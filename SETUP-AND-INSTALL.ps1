@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
 function Invoke-SmartThings {
@@ -9,12 +9,11 @@ function Invoke-SmartThings {
   }
 }
 
-Write-Host "[1/2] 기존 Driver Information Capability 적용" -ForegroundColor Cyan
-Write-Host "  buildbook37604.driverInformation" -ForegroundColor DarkGray
-Write-Host "  제작자: 치즈가루" -ForegroundColor DarkGray
-Write-Host "  버전: v1.0.3" -ForegroundColor DarkGray
+Write-Host "[1/2] Driver Information" -ForegroundColor Cyan
+Write-Host "  Author: CheesePowder" -ForegroundColor DarkGray
+Write-Host "  Version: v1.0.4" -ForegroundColor DarkGray
 
-Write-Host "[2/2] 드라이버 패키징 및 설치" -ForegroundColor Cyan
+Write-Host "[2/2] Packaging and installing driver" -ForegroundColor Cyan
 Invoke-SmartThings @("edge:drivers:package", ".", "--install")
 
 Write-Host "Installation completed." -ForegroundColor Green
