@@ -1,0 +1,6 @@
+zigbeeManufacturer:
+  - id: "eWeLink/MS01"
+    deviceLabel: eWeLink MS01 Motion Sensor
+    manufacturer: eWeLink
+    model: MS01
+    deviceProfileName: ewelink-ms01-motion
