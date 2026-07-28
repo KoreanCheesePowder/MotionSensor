@@ -1,20 +1,27 @@
-C.P MotionSensor v1.0.4
+C.P MotionSensor v1.0.9
 
 Author: CheesePowder
-Version: v1.0.4
+Version: v1.0.9
 Package key: cheesepowder.ewelink-ms01-motion
 
-Settings
-- Detection interval: 0.1 to 3600 seconds
-- Inactive interval: 0.1 to 3600 seconds
-- Extend inactive timer on motion: On/Off
+Default settings
+- Detection hold time: 60 seconds
+- Inactive lock time: 0 seconds
+- Extend active timer on motion: On
+- Experimental hardware writes: Off
+- Hardware interval: 60 / DP 102 (0x66)
+- Hardware sensitivity: 2 / DP 10 (0x0A)
+- Hardware mode: 1 / DP 9 (0x09)
+- Lux threshold: 100 / DP 4 (0x04)
 
-Behavior
-- Detection interval is a software debounce interval for incoming motion reports.
-- It cannot make the physical sensor transmit faster than its hardware allows.
-- With extension enabled, every accepted motion report restarts the inactive timer.
-- With extension disabled, the timer started by the first motion report is not extended.
+[v1.0.9]
+- Inactive lock can be set to 0 seconds.
+- A 0-second inactive lock immediately allows the next hardware motion report.
+- Default software Active hold changed to 60 seconds to match the observed DP 0x66 value.
+- DP 0x09 is treated as an Enum hardware mode, not a 60-second duration.
+- Experimental DP write logs now show outgoing writes and matching read-back confirmation.
+- Experimental hardware writes remain OFF by default.
 
-Install
-1. Extract the ZIP.
-2. Run SETUP-AND-INSTALL.cmd.
+Important
+- DP meanings are based on observed device reports and are still experimental.
+- The physical sensor may not transmit another motion report until its own hardware interval expires.

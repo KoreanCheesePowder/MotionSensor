@@ -4,18 +4,37 @@ local defaults = require "st.zigbee.defaults"
 local clusters = require "st.zigbee.zcl.clusters"
 local device_management = require "st.zigbee.device_management"
 local constants = require "st.zigbee.constants"
+local zcl = require "st.zigbee.zcl"
+local messages = require "st.zigbee.messages"
+local data_types = require "st.zigbee.data_types"
+local generic_body = require "st.zigbee.generic_body"
 
 local IASZone = clusters.IASZone
 local PowerConfiguration = clusters.PowerConfiguration
 local DRIVER_INFO_CAPABILITY_ID = "buildbook37604.driverInformation"
 local driver_info = capabilities[DRIVER_INFO_CAPABILITY_ID]
 
-local MOTION_TIMER = "motionResetTimer"
-local TIMER_GENERATION = "motionTimerGeneration"
-local LAST_ACCEPTED_MOTION = "lastAcceptedMotionMonotonic"
+local TUYA_CLUSTER = 0xEF00
+local TUYA_CMD_SET_DATA = 0x00
+local TUYA_CMD_DATA_RESPONSE = 0x01
+local TUYA_CMD_DATA_REPORT = 0x02
+local DP_TYPE_BOOL = 0x01
+local DP_TYPE_VALUE = 0x02
+local DP_TYPE_STRING = 0x03
+local DP_TYPE_ENUM = 0x04
+local DP_TYPE_BITMAP = 0x05
 
-local DEFAULT_DETECTION_INTERVAL = 0.1
-local DEFAULT_INACTIVE_INTERVAL = 15
+local ACTIVE_TIMER = "motionActiveTimer"
+local ACTIVE_GENERATION = "motionActiveGeneration"
+local LOCK_TIMER = "motionInactiveLockTimer"
+local LOCK_GENERATION = "motionInactiveLockGeneration"
+local IS_LOCKED = "motionInactiveLocked"
+local TUYA_SEQUENCE = "tuyaSequence"
+local LAST_DP_VALUES = "lastTuyaDpValues"
+local PENDING_DP_WRITES = "pendingTuyaDpWrites"
+
+local DEFAULT_ACTIVE_INTERVAL = 60
+local DEFAULT_INACTIVE_INTERVAL = 0
 
 local function preference_number(device, name, default_value, minimum, maximum)
   local value = tonumber(device.preferences and device.preferences[name]) or default_value
@@ -24,12 +43,12 @@ local function preference_number(device, name, default_value, minimum, maximum)
   return value
 end
 
-local function detection_interval(device)
-  return preference_number(device, "detectionInterval", DEFAULT_DETECTION_INTERVAL, 0.1, 3600)
+local function active_interval(device)
+  return preference_number(device, "detectionInterval", DEFAULT_ACTIVE_INTERVAL, 0.1, 3600)
 end
 
 local function inactive_interval(device)
-  return preference_number(device, "inactiveInterval", DEFAULT_INACTIVE_INTERVAL, 0.1, 3600)
+  return preference_number(device, "inactiveInterval", DEFAULT_INACTIVE_INTERVAL, 0, 3600)
 end
 
 local function extend_on_motion(device)
@@ -38,70 +57,100 @@ local function extend_on_motion(device)
   return value == true
 end
 
-local function cancel_motion_timer(device)
-  local timer = device:get_field(MOTION_TIMER)
+local function cancel_timer(device, field_name)
+  local timer = device:get_field(field_name)
   if timer ~= nil then
     pcall(function() device.thread:cancel_timer(timer) end)
-    device:set_field(MOTION_TIMER, nil)
+    device:set_field(field_name, nil)
   end
 end
 
-local function next_timer_generation(device)
-  local generation = (device:get_field(TIMER_GENERATION) or 0) + 1
-  device:set_field(TIMER_GENERATION, generation)
+local function next_generation(device, field_name)
+  local generation = (device:get_field(field_name) or 0) + 1
+  device:set_field(field_name, generation)
   return generation
+end
+
+local function cancel_active_timer(device)
+  cancel_timer(device, ACTIVE_TIMER)
+  next_generation(device, ACTIVE_GENERATION)
+end
+
+local function cancel_lock_timer(device)
+  cancel_timer(device, LOCK_TIMER)
+  next_generation(device, LOCK_GENERATION)
+end
+
+local function start_inactive_lock(device)
+  cancel_lock_timer(device)
+  local delay = inactive_interval(device)
+
+  if delay <= 0 then
+    device:set_field(IS_LOCKED, false)
+    device.log.info("Inactive lock disabled: ready for next motion")
+    return
+  end
+
+  device:set_field(IS_LOCKED, true)
+  local generation = next_generation(device, LOCK_GENERATION)
+  device.log.info(string.format("Inactive lock started: %.1f seconds", delay))
+
+  local timer = device.thread:call_with_delay(delay, function()
+    if device:get_field(LOCK_GENERATION) ~= generation then return end
+    device:set_field(LOCK_TIMER, nil)
+    device:set_field(IS_LOCKED, false)
+    device.log.info("Inactive lock ended: ready for next motion")
+  end)
+
+  device:set_field(LOCK_TIMER, timer)
 end
 
 local function schedule_motion_inactive(device, restart)
   if restart then
-    cancel_motion_timer(device)
-  elseif device:get_field(MOTION_TIMER) ~= nil then
+    cancel_active_timer(device)
+  elseif device:get_field(ACTIVE_TIMER) ~= nil then
     return
   end
 
-  local generation = next_timer_generation(device)
-  local timer = device.thread:call_with_delay(inactive_interval(device), function()
-    if device:get_field(TIMER_GENERATION) ~= generation then return end
-    device:emit_event(capabilities.motionSensor.motion.inactive())
-    device:set_field(MOTION_TIMER, nil)
-  end)
-  device:set_field(MOTION_TIMER, timer)
-end
+  local generation = next_generation(device, ACTIVE_GENERATION)
+  local delay = active_interval(device)
+  device.log.info(string.format("Active timer started: %.1f seconds", delay))
 
-local function accept_motion_report(device)
-  local now = os.clock()
-  local last = device:get_field(LAST_ACCEPTED_MOTION)
-  if last ~= nil and (now - last) < detection_interval(device) then
-    return false
-  end
-  device:set_field(LAST_ACCEPTED_MOTION, now)
-  return true
+  local timer = device.thread:call_with_delay(delay, function()
+    if device:get_field(ACTIVE_GENERATION) ~= generation then return end
+    device:set_field(ACTIVE_TIMER, nil)
+    device:emit_event(capabilities.motionSensor.motion.inactive())
+    device.log.info("Motion inactive")
+    start_inactive_lock(device)
+  end)
+
+  device:set_field(ACTIVE_TIMER, timer)
 end
 
 local function process_motion_active(device)
-  if not accept_motion_report(device) then return end
+  if device:get_field(IS_LOCKED) == true then
+    device.log.debug("Motion ignored during inactive lock")
+    return
+  end
 
-  local current = device:get_latest_state(
-    "main",
-    capabilities.motionSensor.ID,
-    capabilities.motionSensor.motion.NAME
-  )
-
+  local current = device:get_latest_state("main", capabilities.motionSensor.ID, capabilities.motionSensor.motion.NAME)
   if current ~= "active" then
     device:emit_event(capabilities.motionSensor.motion.active())
+    device.log.info("Motion active")
     schedule_motion_inactive(device, true)
     return
   end
 
   if extend_on_motion(device) then
+    device.log.debug("Motion received: active timer extended")
     schedule_motion_inactive(device, true)
+  else
+    device.log.debug("Motion received: active timer not extended")
   end
 end
 
 local function emit_motion_from_zone_status(device, zone_status)
-  if zone_status:is_alarm1_set() then
-    process_motion_active(device)
-  end
+  if zone_status:is_alarm1_set() then process_motion_active(device) end
 end
 
 local function ias_zone_status_attr_handler(driver, device, zone_status, zb_rx)
@@ -112,23 +161,161 @@ local function ias_zone_status_change_handler(driver, device, zb_rx)
   emit_motion_from_zone_status(device, zb_rx.body.zcl_body.zone_status)
 end
 
-local function emit_driver_information(device)
-  if driver_info then
-    if driver_info.author then
-      device:emit_event(driver_info.author("치즈가루"))
+local function next_tuya_sequence(device)
+  local sequence = ((device:get_field(TUYA_SEQUENCE) or 0) + 1) % 65536
+  device:set_field(TUYA_SEQUENCE, sequence)
+  return sequence
+end
+
+local function encode_dp_value(dp_type, value)
+  if dp_type == DP_TYPE_BOOL or dp_type == DP_TYPE_ENUM then
+    return string.char(math.max(0, math.min(255, math.floor(value))))
+  elseif dp_type == DP_TYPE_VALUE then
+    return string.pack(">I4", math.max(0, math.floor(value)))
+  elseif dp_type == DP_TYPE_BITMAP then
+    return string.pack(">I4", math.max(0, math.floor(value)))
+  end
+  return tostring(value)
+end
+
+local function send_tuya_dp(device, dp_id, dp_type, value)
+  local endpoint = device:get_endpoint(TUYA_CLUSTER) or device.fingerprinted_endpoint_id or 1
+  local address_header = messages.AddressHeader(
+    constants.HUB.ADDR,
+    constants.HUB.ENDPOINT,
+    device:get_short_address(),
+    endpoint,
+    constants.HA_PROFILE_ID,
+    TUYA_CLUSTER
+  )
+
+  local zcl_header = zcl.ZclHeader({cmd = data_types.ZCLCommandId(TUYA_CMD_SET_DATA)})
+  zcl_header.frame_ctrl:set_cluster_specific()
+  local encoded = encode_dp_value(dp_type, value)
+  local payload = string.pack(">I2", next_tuya_sequence(device))
+    .. string.char(dp_id)
+    .. string.char(dp_type)
+    .. string.pack(">I2", #encoded)
+    .. encoded
+
+  local body = zcl.ZclMessageBody({zcl_header = zcl_header, zcl_body = generic_body.GenericBody(payload)})
+  local pending = device:get_field(PENDING_DP_WRITES) or {}
+  pending[dp_id] = {type = dp_type, value = value}
+  device:set_field(PENDING_DP_WRITES, pending)
+  device.log.warn(string.format("Writing Tuya DP: id=0x%02X type=0x%02X value=%s", dp_id, dp_type, tostring(value)))
+  device:send(messages.ZigbeeMessageTx({address_header = address_header, body = body}))
+end
+
+local function decode_unsigned(bytes)
+  local value = 0
+  for i = 1, #bytes do value = (value * 256) + string.byte(bytes, i) end
+  return value
+end
+
+local function parse_tuya_payload(device, zb_rx)
+  local body = zb_rx.body.zcl_body.body_bytes or ""
+  local rawhex={}
+  for i=1,#body do rawhex[#rawhex+1]=string.format("%02X", string.byte(body,i)) end
+  device.log.warn("EF00 RAW: "..table.concat(rawhex," "))
+  if #body < 6 then
+    device.log.warn(string.format("Tuya EF00 payload too short: %d bytes", #body))
+    return
+  end
+
+  local offset = 3
+  local values = device:get_field(LAST_DP_VALUES) or {}
+  while offset + 3 <= #body do
+    local dp_id = string.byte(body, offset)
+    local dp_type = string.byte(body, offset + 1)
+    local length = string.unpack(">I2", body, offset + 2)
+    local value_start = offset + 4
+    local value_end = value_start + length - 1
+    if value_end > #body then break end
+
+    local raw = body:sub(value_start, value_end)
+    local decoded
+    if dp_type == DP_TYPE_BOOL or dp_type == DP_TYPE_ENUM or dp_type == DP_TYPE_VALUE or dp_type == DP_TYPE_BITMAP then
+      decoded = decode_unsigned(raw)
+    else
+      decoded = raw
     end
-    if driver_info.driverVersion then
-      device:emit_event(driver_info.driverVersion("v1.0.4"))
+
+    values[dp_id] = {type = dp_type, value = decoded}
+    device.log.info(string.format("Tuya DP report: id=0x%02X type=0x%02X len=%d value=%s", dp_id, dp_type, length, tostring(decoded)))
+
+    local pending = device:get_field(PENDING_DP_WRITES) or {}
+    local expected = pending[dp_id]
+    if expected ~= nil then
+      if expected.type == dp_type and tonumber(expected.value) == tonumber(decoded) then
+        device.log.info(string.format("Tuya DP write confirmed: id=0x%02X value=%s", dp_id, tostring(decoded)))
+        pending[dp_id] = nil
+      else
+        device.log.warn(string.format("Tuya DP read-back differs: id=0x%02X expected(type=0x%02X,value=%s) actual(type=0x%02X,value=%s)", dp_id, expected.type, tostring(expected.value), dp_type, tostring(decoded)))
+      end
+      device:set_field(PENDING_DP_WRITES, pending)
     end
+    offset = value_end + 1
+  end
+  device:set_field(LAST_DP_VALUES, values)
+end
+
+local function tuya_cluster_handler(driver, device, zb_rx)
+  parse_tuya_payload(device, zb_rx)
+end
+
+local function experimental_enabled(device)
+  return device.preferences and device.preferences.experimentalTuyaWrite == true
+end
+
+local function apply_experimental_hardware_settings(device, changed)
+  if not experimental_enabled(device) then
+    device.log.info("Experimental Tuya hardware writes are disabled")
+    return
+  end
+
+  if changed == nil or changed.hardwareInterval then
+    local dp = preference_number(device, "hardwareIntervalDp", 102, 1, 255)
+    local value = preference_number(device, "hardwareInterval", 60, 1, 3600)
+    send_tuya_dp(device, dp, DP_TYPE_VALUE, value)
+  end
+  if changed == nil or changed.hardwareSensitivity then
+    local dp = preference_number(device, "hardwareSensitivityDp", 10, 1, 255)
+    local value = preference_number(device, "hardwareSensitivity", 2, 0, 10)
+    send_tuya_dp(device, dp, DP_TYPE_ENUM, value)
+  end
+  if changed == nil or changed.hardwareKeepTime then
+    local dp = preference_number(device, "hardwareKeepTimeDp", 9, 1, 255)
+    local value = preference_number(device, "hardwareKeepTime", 1, 0, 255)
+    send_tuya_dp(device, dp, DP_TYPE_ENUM, value)
+  end
+  if changed == nil or changed.hardwareLuxThreshold then
+    local dp = preference_number(device, "hardwareLuxThresholdDp", 4, 1, 255)
+    local value = preference_number(device, "hardwareLuxThreshold", 100, 0, 100000)
+    send_tuya_dp(device, dp, DP_TYPE_VALUE, value)
   end
 end
 
-local function device_added(driver, device)
+local function emit_driver_information(device)
+  if driver_info then
+    if driver_info.author then device:emit_event(driver_info.author("치즈가루")) end
+    if driver_info.driverVersion then device:emit_event(driver_info.driverVersion("v1.2.0-debug")) end
+  end
+end
+
+local function reset_motion_state(device)
+  cancel_active_timer(device)
+  cancel_lock_timer(device)
+  device:set_field(IS_LOCKED, false)
   device:emit_event(capabilities.motionSensor.motion.inactive())
+end
+
+local function device_added(driver, device)
+  reset_motion_state(device)
   emit_driver_information(device)
 end
 
 local function device_init(driver, device)
+  reset_motion_state(device)
   emit_driver_information(device)
 end
 
@@ -142,23 +329,29 @@ local function do_configure(driver, device)
 end
 
 local function info_changed(driver, device, event, args)
-  local old_preferences = (args.old_st_store and args.old_st_store.preferences) or {}
-  local current_preferences = device.preferences or {}
+  local oldp = (args.old_st_store and args.old_st_store.preferences) or {}
+  local p = device.preferences or {}
 
-  local inactive_changed = old_preferences.inactiveInterval ~= current_preferences.inactiveInterval
-  local extend_changed = old_preferences.extendOnMotion ~= current_preferences.extendOnMotion
+  local active_changed = oldp.detectionInterval ~= p.detectionInterval
+  local inactive_changed = oldp.inactiveInterval ~= p.inactiveInterval
+  local extend_changed = oldp.extendOnMotion ~= p.extendOnMotion
+  local current_motion = device:get_latest_state("main", capabilities.motionSensor.ID, capabilities.motionSensor.motion.NAME)
 
-  if inactive_changed or extend_changed then
-    local current_motion = device:get_latest_state(
-      "main",
-      capabilities.motionSensor.ID,
-      capabilities.motionSensor.motion.NAME
-    )
-    if current_motion == "active" then
-      schedule_motion_inactive(device, true)
-    end
+  if current_motion == "active" and (active_changed or extend_changed) then
+    schedule_motion_inactive(device, true)
+  elseif device:get_field(IS_LOCKED) == true and inactive_changed then
+    start_inactive_lock(device)
   end
 
+  local changed = {
+    hardwareInterval = oldp.hardwareInterval ~= p.hardwareInterval or oldp.hardwareIntervalDp ~= p.hardwareIntervalDp or oldp.experimentalTuyaWrite ~= p.experimentalTuyaWrite,
+    hardwareSensitivity = oldp.hardwareSensitivity ~= p.hardwareSensitivity or oldp.hardwareSensitivityDp ~= p.hardwareSensitivityDp or oldp.experimentalTuyaWrite ~= p.experimentalTuyaWrite,
+    hardwareKeepTime = oldp.hardwareKeepTime ~= p.hardwareKeepTime or oldp.hardwareKeepTimeDp ~= p.hardwareKeepTimeDp or oldp.experimentalTuyaWrite ~= p.experimentalTuyaWrite,
+    hardwareLuxThreshold = oldp.hardwareLuxThreshold ~= p.hardwareLuxThreshold or oldp.hardwareLuxThresholdDp ~= p.hardwareLuxThresholdDp or oldp.experimentalTuyaWrite ~= p.experimentalTuyaWrite
+  }
+  if changed.hardwareInterval or changed.hardwareSensitivity or changed.hardwareKeepTime or changed.hardwareLuxThreshold then
+    apply_experimental_hardware_settings(device, changed)
+  end
   emit_driver_information(device)
 end
 
@@ -166,38 +359,25 @@ local function refresh_handler(driver, device, command)
   device:send(IASZone.attributes.ZoneStatus:read(device))
   device:send(PowerConfiguration.attributes.BatteryPercentageRemaining:read(device))
   emit_driver_information(device)
+  device.log.info("Refresh requested. Tuya DP values are reported only when the device transmits them.")
 end
 
 local driver_template = {
-  supported_capabilities = {
-    capabilities.motionSensor,
-    capabilities.battery,
-    capabilities.refresh,
-    driver_info
-  },
+  supported_capabilities = {capabilities.motionSensor, capabilities.battery, capabilities.refresh, driver_info},
   zigbee_handlers = {
-    attr = {
-      [IASZone.ID] = {
-        [IASZone.attributes.ZoneStatus.ID] = ias_zone_status_attr_handler
-      }
-    },
+    attr = {[IASZone.ID] = {[IASZone.attributes.ZoneStatus.ID] = ias_zone_status_attr_handler}},
     cluster = {
-      [IASZone.ID] = {
-        [IASZone.client.commands.ZoneStatusChangeNotification.ID] = ias_zone_status_change_handler
+      [IASZone.ID] = {[IASZone.client.commands.ZoneStatusChangeNotification.ID] = ias_zone_status_change_handler},
+      [TUYA_CLUSTER] = {
+        [TUYA_CMD_DATA_RESPONSE] = tuya_cluster_handler,
+        [TUYA_CMD_DATA_REPORT] = tuya_cluster_handler
       }
     }
   },
   capability_handlers = {
-    [capabilities.refresh.ID] = {
-      [capabilities.refresh.commands.refresh.NAME] = refresh_handler
-    }
+    [capabilities.refresh.ID] = {[capabilities.refresh.commands.refresh.NAME] = refresh_handler}
   },
-  lifecycle_handlers = {
-    added = device_added,
-    init = device_init,
-    doConfigure = do_configure,
-    infoChanged = info_changed
-  },
+  lifecycle_handlers = {added = device_added, init = device_init, doConfigure = do_configure, infoChanged = info_changed},
   ias_zone_configuration_method = constants.IAS_ZONE_CONFIGURE_TYPE.AUTO_ENROLL_RESPONSE,
   health_check = false
 }

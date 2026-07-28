@@ -14,27 +14,74 @@ components:
       - name: MotionSensor
 preferences:
   - name: detectionInterval
-    title: 감지 주기
-    description: 반복 감지 신호를 처리할 최소 간격입니다. 센서 자체의 하드웨어 전송 주기보다 짧게 설정해도 실제 전송 주기는 빨라지지 않습니다.
+    title: 감지 유지 시간
+    description: 감지된 뒤 SmartThings Active 상태를 유지할 시간입니다.
     required: true
     preferenceType: number
-    definition:
-      minimum: 0.1
-      maximum: 3600
-      default: 0.1
+    definition: { minimum: 0.1, maximum: 3600, default: 60 }
   - name: inactiveInterval
-    title: 미감지 주기
-    description: 마지막으로 처리한 감지 신호 이후 미감지로 변경할 시간입니다.
+    title: 미감지 유지 시간
+    description: Inactive로 바뀐 뒤 다음 감지를 차단할 시간입니다.
     required: true
     preferenceType: number
-    definition:
-      minimum: 0.1
-      maximum: 3600
-      default: 15
+    definition: { minimum: 0, maximum: 3600, default: 0 }
   - name: extendOnMotion
-    title: 감지 시 미감지 시간 연장
-    description: 켜면 새 감지가 들어올 때마다 미감지 타이머를 다시 시작합니다. 끄면 최초 감지 후 정해진 시간에 미감지로 변경됩니다.
+    title: 감지 시 유지 시간 연장
+    description: 새 감지 패킷을 받을 때 Active 타이머를 다시 시작합니다.
     required: true
     preferenceType: boolean
-    definition:
-      default: true
+    definition: { default: true }
+  - name: experimentalTuyaWrite
+    title: 실험적 하드웨어 설정 전송
+    description: "주의: DP 의미가 아직 확정되지 않았습니다. 켜면 아래 값을 센서 EF00 DP에 직접 씁니다. 기본값은 꺼짐입니다."
+    required: true
+    preferenceType: boolean
+    definition: { default: false }
+  - name: hardwareInterval
+    title: 하드웨어 재감지 간격(초)
+    description: 후보 DP에 쓸 재감지 간격입니다. 현재 로그 기준 DP 0x66을 후보로 사용합니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 1, maximum: 3600, default: 60 }
+  - name: hardwareIntervalDp
+    title: 재감지 간격 DP 번호
+    description: 십진수 DP 번호입니다. 0x66은 102입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 1, maximum: 255, default: 102 }
+  - name: hardwareSensitivity
+    title: 하드웨어 감도 값
+    description: 후보 감도 DP에 쓸 Enum 값입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 0, maximum: 10, default: 2 }
+  - name: hardwareSensitivityDp
+    title: 감도 DP 번호
+    description: 십진수 DP 번호입니다. 초기 후보는 0x0A(10)입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 1, maximum: 255, default: 10 }
+  - name: hardwareKeepTime
+    title: 하드웨어 감지 모드 값
+    description: DP 0x09에 쓸 Enum 값입니다. 현재 센서 보고값은 1입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 0, maximum: 255, default: 1 }
+  - name: hardwareKeepTimeDp
+    title: 감지 모드 DP 번호
+    description: 십진수 DP 번호입니다. 현재 후보는 0x09(9)입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 1, maximum: 255, default: 9 }
+  - name: hardwareLuxThreshold
+    title: 조도 임계값
+    description: 후보 조도 DP에 쓸 값입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 0, maximum: 100000, default: 100 }
+  - name: hardwareLuxThresholdDp
+    title: 조도 임계값 DP 번호
+    description: 십진수 DP 번호입니다. 초기 후보는 0x04(4)입니다.
+    required: true
+    preferenceType: number
+    definition: { minimum: 1, maximum: 255, default: 4 }

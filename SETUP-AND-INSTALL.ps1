@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
 function Invoke-SmartThings {
@@ -11,7 +11,7 @@ function Invoke-SmartThings {
 
 Write-Host "[1/2] Driver Information" -ForegroundColor Cyan
 Write-Host "  Author: CheesePowder" -ForegroundColor DarkGray
-Write-Host "  Version: v1.0.4" -ForegroundColor DarkGray
+Write-Host "  Version: v1.0.7" -ForegroundColor DarkGray
 
 Write-Host "[2/2] Packaging and installing driver" -ForegroundColor Cyan
 Invoke-SmartThings @("edge:drivers:package", ".", "--install")
