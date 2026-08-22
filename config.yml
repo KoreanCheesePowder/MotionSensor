@@ -1,4 +1,4 @@
-name: 치즈가루 모션 센서
+name: C.P MotionSensor
 packageKey: cheesepowder.ewelink-ms01-motion
 permissions:
   zigbee: {}
